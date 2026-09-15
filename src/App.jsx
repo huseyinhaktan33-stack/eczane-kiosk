@@ -111,6 +111,13 @@ const INGREDIENT_KB = [
 ];
 const PREGNANCY_RANK={safe:1,consult:2,avoid:3};
 
+// Türkiye'de eczanelerde yaygın satılan, bilinen yerel/dermokozmetik markalar —
+// havuzda henüz hiç ürünü olmasa bile marka seçim listesinde öneri olarak çıkar.
+// Sahte ürün verisi ÜRETİLMEZ, sadece marka adı önerisi sunulur.
+const COMMON_LOCAL_BRANDS = [
+  "Farmasi","Papilart","Dermokil","Bioxcin","Restilen","Zeyneps","Eyüp Sabri Tuncer",
+];
+
 function analyzeIngredients(actives){
   const skinSet=new Set(),concernSet=new Set(),matched=[];
   let worst=0,worstLabel="unknown";
@@ -129,6 +136,48 @@ function analyzeIngredients(actives){
     pregnancy_safe: matched.length?worstLabel:"unknown",
     matched, unmatchedCount:(actives||[]).length-matched.length,
   };
+}
+
+// ══════════════════════════════════════════════════════════════
+// AKTİF İÇERİK OTOMATİK TAMAMLAMA — bilinen içeriklerden öneri sunar
+// (yazım hatalarını azaltır, içerik analiz algoritmasının daha çok
+// içeriği tanımasını sağlar)
+// ══════════════════════════════════════════════════════════════
+function IngredientAutocomplete({value,onChange,placeholder}){
+  const [focused,setFocused]=useState(false);
+  const parts=String(value||"").split(",");
+  const lastTerm=(parts[parts.length-1]||"").trim().toLowerCase();
+  const already=new Set(parts.slice(0,-1).map(s=>s.trim().toLowerCase()));
+  const suggestions=lastTerm.length>=2
+    ?INGREDIENT_KB.filter(k=>k.label.toLowerCase().includes(lastTerm)&&!already.has(k.label.toLowerCase())).slice(0,6)
+    :[];
+  const pick=(label)=>{
+    const np=[...parts];
+    np[np.length-1]=" "+label;
+    onChange(np.map(s=>s.trim()).filter(Boolean).join(", ")+", ");
+  };
+  return(
+    <div style={{position:"relative"}}>
+      <input value={value} onChange={e=>onChange(e.target.value)}
+        onFocus={()=>setFocused(true)} onBlur={()=>setTimeout(()=>setFocused(false),150)}
+        placeholder={placeholder}
+        style={{width:"100%",padding:"7px 10px",border:"1px solid #E0E0E0",borderRadius:7,
+          fontSize:12,outline:"none",boxSizing:"border-box"}}/>
+      {focused&&suggestions.length>0&&(
+        <div style={{position:"absolute",top:"100%",left:0,right:0,background:"#fff",
+          border:"1px solid #E0E0E0",borderRadius:8,marginTop:2,zIndex:20,
+          boxShadow:"0 4px 12px rgba(0,0,0,.12)",maxHeight:170,overflowY:"auto"}}>
+          {suggestions.map(s=>(
+            <div key={s.label} onMouseDown={()=>pick(s.label)}
+              style={{padding:"8px 10px",fontSize:11,color:"#333",cursor:"pointer",
+                borderBottom:"1px solid #F5F5F5"}}>
+              {s.label}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -476,6 +525,17 @@ function buildReason(product, profile, isPair, basket) {
 // ══════════════════════════════════════════════════════════════
 // STOK YARDIMCILARI (stock: number=adet, true=sınırsız/bilinmiyor, false=yok)
 // ══════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+// MARKA BAZLI BOYKOT — bir marka boykot listesindeyse, ürün üzerinde
+// ayrıca "temiz" işaretlenmediği sürece tüm ürünleri boykot sayılır.
+// Ürün üzerindeki alan yine de tekil istisna/ek işaretleme için kullanılır.
+// ══════════════════════════════════════════════════════════════
+function effectiveBoycott(product,boycottedBrands){
+  if(product.boycott==="boykot")return"boykot";
+  if(boycottedBrands&&boycottedBrands.has(product.brand))return"boykot";
+  return product.boycott||"bilinmiyor";
+}
+
 function hasStock(p){
   if(p==null)return false;
   if(p.stock===undefined||p.stock===null)return true;
@@ -1357,7 +1417,7 @@ function ChangeCredentialsModal({title,initialEmail,initialPhone,showPhone=true,
 // ══════════════════════════════════════════════════════════════
 // ÜRÜN DETAY MODAL
 // ══════════════════════════════════════════════════════════════
-function ProductModal({product,qty=0,onAdd,onRemove,onClose,theme}){
+function ProductModal({product,qty=0,onAdd,onRemove,onClose,theme,boycottedBrands}){
   const T=theme||DT;
   const price=product.discountedPrice||product.price||product.basePrice;
   const orig=product.price||product.basePrice;
@@ -1389,7 +1449,7 @@ function ProductModal({product,qty=0,onAdd,onRemove,onClose,theme}){
               -%{Math.round((1-price/orig)*100)}</span></>}
         </div>
         <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:10}}>
-          <BoycottBadge status={product.boycott}/>
+          <BoycottBadge status={effectiveBoycott(product,boycottedBrands)}/>
           <PregBadge status={product.pregnancy_safe}/>
           {!hasStock(product)&&<span style={{background:"#FFF3E0",color:"#7D4700",fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:5}}>Stok Yok</span>}
           {(product.certs||[]).map(c=><CertBadge key={c} id={c}/>)}
@@ -1433,7 +1493,7 @@ function ProductModal({product,qty=0,onAdd,onRemove,onClose,theme}){
 // ══════════════════════════════════════════════════════════════
 // ÜRÜN KARTI
 // ══════════════════════════════════════════════════════════════
-function ProductCard({product,qty=0,onAdd,onRemove,onDetail,compact=false,recReason=null,theme,isTop=false}){
+function ProductCard({product,qty=0,onAdd,onRemove,onDetail,compact=false,recReason=null,theme,isTop=false,boycottedBrands}){
   const T=theme||DT;
   const inBasket=qty>0;
   const stockNum=stockQty(product);
@@ -1490,7 +1550,7 @@ function ProductCard({product,qty=0,onAdd,onRemove,onDetail,compact=false,recRea
         )}
       </div>
       <div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:7}}>
-        <BoycottBadge status={product.boycott}/>
+        <BoycottBadge status={effectiveBoycott(product,boycottedBrands)}/>
         <PregBadge status={product.pregnancy_safe}/>
         {!hasStock(product)&&<span style={{background:"#FFF3E0",color:"#7D4700",fontSize:10,fontWeight:600,padding:"2px 7px",borderRadius:5}}>Stok Yok</span>}
         {atMax&&<span style={{background:"#FFF3E0",color:"#7D4700",fontSize:10,fontWeight:600,padding:"2px 7px",borderRadius:5}}>Stok limiti: {stockNum}</span>}
@@ -1509,7 +1569,7 @@ function ProductCard({product,qty=0,onAdd,onRemove,onDetail,compact=false,recRea
 // ══════════════════════════════════════════════════════════════
 // MÜŞTERİ KİOSK
 // ══════════════════════════════════════════════════════════════
-function CustomerKiosk({pharmacyCatalog,pharmacySettings,onAdminTrigger,onCompleteSale}){
+function CustomerKiosk({pharmacyCatalog,pharmacySettings,onAdminTrigger,onCompleteSale,boycottedBrands}){
   const T=useTheme(pharmacySettings);
   const [basket,setBasket]=useState([]);
   const [tab,setTab]=useState("catalog");
@@ -1551,7 +1611,7 @@ function CustomerKiosk({pharmacyCatalog,pharmacySettings,onAdminTrigger,onComple
   const filteredBase=pharmacyCatalog
     .filter(p=>hasStock(p))
     .filter(p=>filterCat==="hepsi"||p.category===filterCat)
-    .filter(p=>!filterBoycott||p.boycott!=="boykot")
+    .filter(p=>!filterBoycott||effectiveBoycott(p,boycottedBrands)!=="boykot")
     .filter(p=>!isPregnant||p.pregnancy_safe!=="avoid")
     .filter(p=>search===""||
       p.name.toLowerCase().includes(search.toLowerCase())||
@@ -1570,12 +1630,23 @@ function CustomerKiosk({pharmacyCatalog,pharmacySettings,onAdminTrigger,onComple
   const discCfg={
     enabled: pharmacySettings?.cartDiscountEnabled!==false,
     threshold: Math.max(1, parseInt(pharmacySettings?.cartDiscountThreshold)||1),
-    pct: Math.max(1, parseInt(pharmacySettings?.cartDiscountPct)||10),
+    pct: Math.max(1, parseInt(pharmacySettings?.cartDiscountPct)||5),
   };
 
+  // İstenen yüzdeyi uygular AMA her üründe kendi maliyetine göre minimum kâr marjının
+  // altına düşürmez — ürün ürün farklı (daha düşük) bir indirim uygulanabilir.
   const applyDiscToBasket=(nb,pct)=>{
-    const rate=1-(pct/100);
-    return nb.map(x=>({...x,discountedPrice:Math.round((x.price||x.basePrice)*rate)}));
+    return nb.map(x=>{
+      const price=x.price||x.basePrice;
+      let itemPct=pct;
+      if(x.cost&&x.cost>0&&price>0){
+        const minPriceForMargin=x.cost/(1-MIN_MARGIN);
+        const maxPct=Math.floor((1-(minPriceForMargin/price))*100);
+        itemPct=Math.min(pct,Math.max(0,maxPct));
+      }
+      const rate=1-(itemPct/100);
+      return {...x,discountedPrice:Math.round(price*rate)};
+    });
   };
 
   // Ürün sepette zaten varsa adedini +1 artırır (stok limiti içinde), yoksa 1 adetle ekler
@@ -1596,17 +1667,13 @@ function CustomerKiosk({pharmacyCatalog,pharmacySettings,onAdminTrigger,onComple
     let pct=aiDiscount?.discount_pct;
 
     if(!discountApplied&&discCfg.enabled&&totalQty>=discCfg.threshold){
-      const avgMargin=nb.reduce((s,x)=>{
-        const pr=x.price||x.basePrice;const c=x.cost;
-        return s+(c?(pr-c)/pr:0.3);
-      },0)/nb.length;
-      if(avgMargin>MIN_MARGIN+0.05){shouldApply=true;pct=discCfg.pct;}
+      shouldApply=true;pct=discCfg.pct;
     }
 
     if(shouldApply&&pct){
       setBasket(applyDiscToBasket(nb,pct));
       if(!discountApplied){
-        setAiDiscount({discount_pct:pct,reason:`${totalQty} ürün alımında %${pct} indirim otomatik uygulandı`});
+        setAiDiscount({discount_pct:pct,reason:`${totalQty} ürün alımında, ürün başına kâr marjı korunarak indirim uygulandı`});
         setDiscountApplied(true);
       }
     } else {
@@ -1687,7 +1754,7 @@ function CustomerKiosk({pharmacyCatalog,pharmacySettings,onAdminTrigger,onComple
       {showScanner&&<BarcodeScanner catalog={INITIAL_POOL} onFound={handleScanFound}
         onClose={()=>setShowScanner(false)} mode="customer"/>}
       {detailProduct&&<ProductModal product={detailProduct} qty={basket.find(p=>p.id===detailProduct.id)?.qty||0}
-        onAdd={addToBasket} onRemove={removeFromBasket}
+        boycottedBrands={boycottedBrands} onAdd={addToBasket} onRemove={removeFromBasket}
         onClose={()=>setDetailProduct(null)} theme={T}/>}
 
       {/* HEADER */}
@@ -1774,7 +1841,7 @@ function CustomerKiosk({pharmacyCatalog,pharmacySettings,onAdminTrigger,onComple
               const score=skinProfile?scoreProduct(p,skinProfile):0;
               const isTop=skinProfile&&score>=3&&i<3;
               return <ProductCard key={p.id} product={p} qty={basket.find(b=>b.id===p.id)?.qty||0}
-                onAdd={addToBasket} onRemove={removeFromBasket}
+                boycottedBrands={boycottedBrands} onAdd={addToBasket} onRemove={removeFromBasket}
                 onDetail={setDetailProduct} theme={T} isTop={isTop}/>;
             })}
           </div>
@@ -1803,7 +1870,7 @@ function CustomerKiosk({pharmacyCatalog,pharmacySettings,onAdminTrigger,onComple
               </div>
               <div style={{display:"flex",flexDirection:"column",gap:7,marginBottom:14}}>
                 {basket.map(p=><ProductCard key={p.id} product={p} qty={p.qty||1}
-                  onAdd={addToBasket} onRemove={removeFromBasket}
+                  boycottedBrands={boycottedBrands} onAdd={addToBasket} onRemove={removeFromBasket}
                   onDetail={setDetailProduct} compact theme={T}/>)}
               </div>
               <div style={{background:T.primary,color:"#fff",borderRadius:14,padding:"14px 16px",
@@ -1820,7 +1887,7 @@ function CustomerKiosk({pharmacyCatalog,pharmacySettings,onAdminTrigger,onComple
               {aiDiscount&&(
                 <div style={{background:"#FFFDE7",border:"1px solid #FBC02D",borderRadius:12,padding:14,marginBottom:14}}>
                   <div style={{fontSize:13,fontWeight:700,color:"#7D4700",marginBottom:4}}>
-                    🎁 İndirim Önerisi: %{aiDiscount.discount_pct}
+                    🎁 Sepet İndirimi Uygulandı (en fazla %{aiDiscount.discount_pct})
                   </div>
                   <div style={{fontSize:11,color:"#7D4700",lineHeight:1.5,marginBottom:10}}>{aiDiscount.reason}</div>
                   <div style={{display:"flex",gap:8}}>
@@ -1855,7 +1922,7 @@ function CustomerKiosk({pharmacyCatalog,pharmacySettings,onAdminTrigger,onComple
                   <div style={{display:"flex",flexDirection:"column",gap:7}}>
                     {recs.map(({prod,reason})=>prod&&(
                       <ProductCard key={prod.id} product={prod} qty={basket.find(b=>b.id===prod.id)?.qty||0}
-                        onAdd={addToBasket} onRemove={removeFromBasket}
+                        boycottedBrands={boycottedBrands} onAdd={addToBasket} onRemove={removeFromBasket}
                         onDetail={setDetailProduct} compact recReason={reason} theme={T}/>
                     ))}
                   </div>
@@ -3051,8 +3118,10 @@ function PharmacyAdmin({masterPool,setPool,pharmacyCatalog,setPharmacyCatalog,ph
                   onChange={v=>setPharmacySettings(prev=>({...prev,cartDiscountEnabled:v}))} color="#F9A825"/>
               </div>
               <div style={{fontSize:11,color:"#999",marginBottom:12,lineHeight:1.5}}>
-                Müşteri sepete belirlediğiniz sayıda ürün ekleyince, tüm sepet fiyatı otomatik
-                olarak indirimli gösterilir (kâr marjı güvenlik sınırının altına düşülmez).
+                Müşteri sepete belirlediğiniz sayıda ürün ekleyince, sepet fiyatı otomatik olarak
+                indirimli gösterilir. <b>Girdiğiniz oran bir üst sınırdır</b> — kâr marjı dar olan
+                ürünlerde sistem otomatik olarak daha düşük (gerekirse %0) indirim uygular, hiçbir
+                üründe belirlenen minimum kâr marjının altına inilmez.
               </div>
               <div style={{display:"flex",gap:8,marginBottom:4}}>
                 <div style={{flex:1}}>
@@ -3064,9 +3133,9 @@ function PharmacyAdmin({masterPool,setPool,pharmacyCatalog,setPharmacyCatalog,ph
                       fontSize:13,outline:"none",boxSizing:"border-box"}}/>
                 </div>
                 <div style={{flex:1}}>
-                  <div style={{fontSize:11,fontWeight:600,color:"#555",marginBottom:4}}>İndirim Oranı (%)</div>
-                  <input type="number" min="1" max="90" defaultValue={pharmacySettings?.cartDiscountPct||10}
-                    onBlur={e=>{const v=Math.max(1,Math.min(90,parseInt(e.target.value)||10));
+                  <div style={{fontSize:11,fontWeight:600,color:"#555",marginBottom:4}}>Üst Sınır İndirim (%)</div>
+                  <input type="number" min="1" max="90" defaultValue={pharmacySettings?.cartDiscountPct||5}
+                    onBlur={e=>{const v=Math.max(1,Math.min(90,parseInt(e.target.value)||5));
                       setPharmacySettings(prev=>({...prev,cartDiscountPct:v}));}}
                     style={{width:"100%",padding:"8px 10px",border:"1px solid #E0E0E0",borderRadius:8,
                       fontSize:13,outline:"none",boxSizing:"border-box"}}/>
@@ -3222,10 +3291,10 @@ function PoolItem({product:p, onUpdate, onRemove, selected=false, onToggleSelect
             {photo&&<img src={photo} style={{width:"100%",height:70,objectFit:"cover",borderRadius:7,marginBottom:6}}
               onError={e=>e.target.style.display="none"} onLoad={e=>e.target.style.display="block"}/>}
             <div style={{fontSize:11,fontWeight:600,color:"#555",marginBottom:4}}>🧬 Aktif İçerikler (virgülle)</div>
-            <input type="text" value={activesText} onChange={e=>setActivesText(e.target.value)}
-              placeholder="Hyalüronik Asit, Niasinamid, Retinol"
-              style={{width:"100%",padding:"7px 10px",border:"1px solid #E0E0E0",borderRadius:7,
-                fontSize:11,outline:"none",boxSizing:"border-box",marginBottom:6}}/>
+            <div style={{marginBottom:6}}>
+              <IngredientAutocomplete value={activesText} onChange={setActivesText}
+                placeholder="Hyalüronik Asit, Niasinamid, Retinol"/>
+            </div>
             <button onClick={saveMeta}
               style={{width:"100%",background:savedMeta?"#1E6B3E":"#1C1C1A",color:"#fff",border:"none",
                 borderRadius:7,padding:"8px",fontSize:11,fontWeight:600,cursor:"pointer"}}>
@@ -3583,7 +3652,7 @@ function PoolExcelImport({pool,onImport}){
   );
 }
 
-function SuperAdmin({pool,setPool,accounts,onApprove,onReject,onSuspend,onReactivate,onDeleteAccount,onResetPassword,superadminAccount,onUpdateSuperadmin,onBack}){
+function SuperAdmin({pool,setPool,accounts,onApprove,onReject,onSuspend,onReactivate,onDeleteAccount,onResetPassword,boycottedBrands,onAddBoycottBrand,onRemoveBoycottBrand,superadminAccount,onUpdateSuperadmin,onBack}){
   // Güvenlik: 10 dakika etkileşim olmazsa panelden otomatik çıkış yapılır
   useIdleTimer(10*60*1000,onBack,true);
   const [panelTab,setPanelTab]=useState("pool"); // pool | excel | accounts
@@ -3594,6 +3663,42 @@ function SuperAdmin({pool,setPool,accounts,onApprove,onReject,onSuspend,onReacti
   const [selected,setSelected]=useState(new Set());
   const [msg,setMsg]=useState("");
   const [showAdd,setShowAdd]=useState(false);
+  const [showBoycottPanel,setShowBoycottPanel]=useState(false);
+  const [newBrandMode,setNewBrandMode]=useState(false);
+  const [barcodeFetching,setBarcodeFetching]=useState(false);
+  // Barkoddan Open Beauty Facts (açık kaynak) üzerinden ürün bilgisi çekmeyi dener.
+  // Bulamazsa/başarısız olursa formu boş bırakır, elle doldurmaya engel olmaz.
+  const handleBarcodeAutofill=async()=>{
+    const bc=(form.barcode||"").trim();
+    if(!bc){notify("⚠ Önce barkod girin.");return;}
+    setBarcodeFetching(true);
+    try{
+      const res=await fetch(`https://world.openbeautyfacts.org/api/v0/product/${encodeURIComponent(bc)}.json`);
+      const data=await res.json();
+      if(data.status!==1||!data.product){
+        notify("❕ Bu barkod için ürün bulunamadı, elle doldurabilirsiniz.");
+        return;
+      }
+      const pr=data.product;
+      const foundBrand=(pr.brands||"").split(",")[0].trim();
+      const foundName=pr.product_name||pr.product_name_tr||pr.generic_name||"";
+      const foundPhoto=pr.image_front_url||pr.image_url||"";
+      setForm(p=>({
+        ...p,
+        name: foundName||p.name,
+        brand: foundBrand||p.brand,
+        photo: foundPhoto||p.photo,
+      }));
+      if(foundBrand&&!poolBrands.includes(foundBrand)&&!COMMON_LOCAL_BRANDS.includes(foundBrand)){
+        setNewBrandMode(true);
+      }
+      notify("✓ Bulunan bilgiler dolduruldu — lütfen kontrol edip eksikleri (fiyat, içerik vb.) tamamlayın.");
+    }catch(e){
+      notify("⚠ Bağlantı hatası — internet bağlantınızı kontrol edin veya elle doldurun.");
+    }finally{
+      setBarcodeFetching(false);
+    }
+  };
   const [showCredModal,setShowCredModal]=useState(false);
   const [showFillScanner,setShowFillScanner]=useState(false);
   const pendingCount=accounts.filter(a=>a.status==="pending").length;
@@ -3643,7 +3748,7 @@ function SuperAdmin({pool,setPool,accounts,onApprove,onReject,onSuspend,onReacti
     setForm({brand:"",name:"",barcode:"",photo:"",category:"temizleyici",usage:"both",
       basePrice:"",actives:"",desc:"",how_to:"",boycott:"bilinmiyor",pregnancy_safe:"unknown",
       skin_types:[],concerns:[]});
-    setErrors({});setShowAdd(false);notify("✓ Ürün havuza eklendi.");
+    setErrors({});setShowAdd(false);setNewBrandMode(false);notify("✓ Ürün havuza eklendi.");
   };
 
   const F=({f,l,ph,type="text"})=>(
@@ -3759,6 +3864,48 @@ function SuperAdmin({pool,setPool,accounts,onApprove,onReject,onSuspend,onReacti
         <FilterChips label="Marka" options={poolBrands} value={filterBrand} onChange={setFilterBrand}/>
         <FilterChips label="Kategori" options={Object.keys(CAT_LABELS)} value={filterCat}
           onChange={setFilterCat} getLabel={c=>CAT_LABELS[c]}/>
+        {/* Marka Bazlı Boykot Yönetimi */}
+        <div style={{background:"#fff",borderRadius:12,border:"1px solid #E0E0E0",padding:12,marginBottom:10}}>
+          <button onClick={()=>setShowBoycottPanel(v=>!v)}
+            style={{width:"100%",display:"flex",justifyContent:"space-between",alignItems:"center",
+              background:"none",border:"none",cursor:"pointer",padding:0}}>
+            <span style={{fontSize:13,fontWeight:700,color:"#8B2E2E"}}>
+              ⛔ Marka Bazlı Boykot{boycottedBrands&&boycottedBrands.size>0?` (${boycottedBrands.size})`:""}
+            </span>
+            <span style={{fontSize:12,color:"#999"}}>{showBoycottPanel?"▲":"▼"}</span>
+          </button>
+          {showBoycottPanel&&(
+            <div style={{marginTop:10}}>
+              <div style={{fontSize:11,color:"#888",marginBottom:8,lineHeight:1.5}}>
+                Buraya eklenen bir marka, tüm ürünleri otomatik olarak boykot sayılır — ürün ürün
+                işaretlemeye gerek kalmaz. Bir ürünü tek tek "boykot" işaretlemek hâlâ mümkün
+                (marka listede olmasa bile o tek ürün için geçerli olur).
+              </div>
+              {boycottedBrands&&boycottedBrands.size>0&&(
+                <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
+                  {[...boycottedBrands].sort((a,b)=>a.localeCompare(b,"tr")).map(b=>(
+                    <span key={b} style={{display:"inline-flex",alignItems:"center",gap:5,
+                      background:"#FDECEA",color:"#8B2E2E",fontSize:11,fontWeight:600,
+                      padding:"4px 6px 4px 10px",borderRadius:20}}>
+                      {b}
+                      <button onClick={()=>onRemoveBoycottBrand&&onRemoveBoycottBrand(b)}
+                        style={{background:"none",border:"none",color:"#8B2E2E",cursor:"pointer",
+                          fontSize:14,fontWeight:700,padding:"0 4px",lineHeight:1}}>×</button>
+                    </span>
+                  ))}
+                </div>
+              )}
+              <select value="" onChange={e=>{if(e.target.value)onAddBoycottBrand&&onAddBoycottBrand(e.target.value);}}
+                style={{width:"100%",padding:"8px 10px",border:"1px solid #E0E0E0",borderRadius:8,
+                  fontSize:12,background:"#fff",color:"#333"}}>
+                <option value="">+ Marka seç ve boykot listesine ekle…</option>
+                {poolBrands.filter(b=>!(boycottedBrands&&boycottedBrands.has(b))).map(b=>(
+                  <option key={b} value={b}>{b}</option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
           <div style={{fontSize:11,color:"#999"}}>{filtered.length} / {pool.length} ürün · {poolBrands.length} marka</div>
           <select value={sortBy} onChange={e=>setSortBy(e.target.value)}
@@ -3790,11 +3937,43 @@ function SuperAdmin({pool,setPool,accounts,onApprove,onReject,onSuspend,onReacti
             <div style={{fontSize:11,color:"#999",marginBottom:12}}>
               Çok sayıda ürün ekleyecekseniz "Excel İçe Aktar" sekmesi çok daha hızlıdır.
             </div>
-            <F f="brand" l="Marka *" ph="Avène"/>
+            <div style={{marginBottom:8}}>
+              <div style={{fontSize:11,fontWeight:600,color:"#555",marginBottom:3}}>Marka *</div>
+              {newBrandMode||(poolBrands.length+COMMON_LOCAL_BRANDS.length)===0?(
+                <input value={form.brand} onChange={e=>setForm(p=>({...p,brand:e.target.value}))}
+                  placeholder="Yeni marka adı" autoFocus={poolBrands.length>0}
+                  style={{width:"100%",padding:"7px 10px",border:`1px solid ${errors.brand?"#C0392B":"#E0E0E0"}`,
+                    borderRadius:7,fontSize:12,outline:"none",boxSizing:"border-box"}}/>
+              ):(
+                <select value={[...poolBrands,...COMMON_LOCAL_BRANDS].includes(form.brand)?form.brand:""}
+                  onChange={e=>{
+                    if(e.target.value==="__new__"){setNewBrandMode(true);setForm(p=>({...p,brand:""}));}
+                    else setForm(p=>({...p,brand:e.target.value}));
+                  }}
+                  style={{width:"100%",padding:"7px 10px",border:`1px solid ${errors.brand?"#C0392B":"#E0E0E0"}`,
+                    borderRadius:7,fontSize:12,outline:"none",background:"#fff",color:"#333"}}>
+                  <option value="">— Marka seç —</option>
+                  {poolBrands.length>0&&(
+                    <optgroup label="Havuzdaki markalar">
+                      {poolBrands.map(b=><option key={b} value={b}>{b}</option>)}
+                    </optgroup>
+                  )}
+                  <optgroup label="Önerilen yerel markalar">
+                    {COMMON_LOCAL_BRANDS.filter(b=>!poolBrands.includes(b)).map(b=><option key={b} value={b}>{b}</option>)}
+                  </optgroup>
+                  <option value="__new__">+ Yeni marka ekle…</option>
+                </select>
+              )}
+              {newBrandMode&&poolBrands.length>0&&(
+                <button type="button" onClick={()=>{setNewBrandMode(false);setForm(p=>({...p,brand:""}));}}
+                  style={{background:"none",border:"none",color:"#3949AB",fontSize:10,cursor:"pointer",
+                    marginTop:3,padding:0}}>← Mevcut markalardan seç</button>
+              )}
+              {errors.brand&&<div style={{color:"#C0392B",fontSize:10,marginTop:2}}>⚠ {errors.brand}</div>}
+            </div>
             <F f="name" l="Ürün Adı *" ph="Temizleyici Jel"/>
-            <F f="barcode" l="Barkod" ph="8690123456789"/>
             <F f="photo" l="Fotoğraf URL (opsiyonel)" ph="https://..."/>
-            {/* Barkod — scan butonu ile */}
+            {/* Barkod — tara veya elle gir, ardından açık kaynak veritabanından otomatik doldur */}
             <div style={{marginBottom:8}}>
               <div style={{fontSize:11,fontWeight:600,color:"#555",marginBottom:3}}>Barkod (EAN-13)</div>
               <div style={{display:"flex",gap:6}}>
@@ -3809,12 +3988,27 @@ function SuperAdmin({pool,setPool,accounts,onApprove,onReject,onSuspend,onReacti
                   📷
                 </button>
               </div>
+              <button type="button" onClick={handleBarcodeAutofill} disabled={barcodeFetching}
+                style={{width:"100%",marginTop:6,background:barcodeFetching?"#EEE":"#EEF0FB",
+                  color:barcodeFetching?"#999":"#3949AB",border:"none",borderRadius:7,
+                  padding:"8px",fontSize:11,fontWeight:600,cursor:barcodeFetching?"default":"pointer",
+                  display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
+                {barcodeFetching?<><Spinner size={13}/> Aranıyor…</>:"🔍 Barkoddan Otomatik Doldur (isim/marka/foto)"}
+              </button>
+              <div style={{fontSize:9,color:"#AAA",marginTop:4,lineHeight:1.4}}>
+                Açık kaynaklı ürün veritabanından (Open Beauty Facts) dener; her barkod için sonuç
+                garanti değildir, bulamazsa elle doldurabilirsiniz.
+              </div>
               {form.barcode&&<div style={{fontSize:10,color:"#1E6B3E",marginTop:3}}>
                 ✓ Barkod girildi: {form.barcode}
               </div>}
             </div>
             <F f="basePrice" l="Taban Fiyat (₺) *" ph="520" type="number"/>
-            <F f="actives" l="Aktif İçerikler (virgülle)" ph="Hyalüronik Asit, Niasinamid"/>
+            <div style={{marginBottom:8}}>
+              <div style={{fontSize:11,fontWeight:600,color:"#555",marginBottom:3}}>Aktif İçerikler (virgülle)</div>
+              <IngredientAutocomplete value={form.actives} onChange={v=>setForm(p=>({...p,actives:v}))}
+                placeholder="Hyalüronik Asit, Niasinamid"/>
+            </div>
             <IngredientAnalysisBox actives={form.actives} onApply={result=>setForm(p=>({
               ...p, skin_types:result.skin_types, concerns:result.concerns,
               pregnancy_safe:result.pregnancy_safe!=="unknown"?result.pregnancy_safe:p.pregnancy_safe,
@@ -4067,6 +4261,25 @@ export default function App(){
     });
   },[]);
 
+  // Marka bazlı boykot listesi — herkese açık, uygulama açılışında yüklenir
+  const [boycottedBrands,setBoycottedBrands]=useState(new Set());
+  const loadBoycottedBrands=async()=>{
+    const{data,error}=await supabase.from("brand_boycotts").select("brand");
+    if(!error&&data)setBoycottedBrands(new Set(data.map(r=>r.brand)));
+  };
+  useEffect(()=>{loadBoycottedBrands();},[]);
+  const addBoycottBrand=async(brand)=>{
+    if(!brand||!brand.trim())return;
+    const b=brand.trim();
+    setBoycottedBrands(prev=>new Set(prev).add(b));
+    const{error}=await supabase.from("brand_boycotts").insert({brand:b});
+    if(error)await loadBoycottedBrands(); // çakışma/hata olursa gerçek durumu yeniden çek
+  };
+  const removeBoycottBrand=async(brand)=>{
+    setBoycottedBrands(prev=>{const n=new Set(prev);n.delete(brand);return n;});
+    await supabase.from("brand_boycotts").delete().eq("brand",brand);
+  };
+
   // Eczane hesapları (süper admin için canlı liste — Supabase'den çekilir)
   const [accounts,setAccounts]=useState([]);
   // Giriş yapmış eczanenin kendi profili (accounts listesinden bağımsız — RLS gereği eczane sadece kendi satırını görebilir)
@@ -4099,7 +4312,7 @@ export default function App(){
       name:settings.name, primary_brand:settings.primaryBrand,
       cart_discount_enabled:settings.cartDiscountEnabled!==false,
       cart_discount_threshold:settings.cartDiscountThreshold||1,
-      cart_discount_pct:settings.cartDiscountPct||10,
+      cart_discount_pct:settings.cartDiscountPct||5,
     }).eq("pharmacy_id",pharmacyId);
   };
 
@@ -4347,7 +4560,8 @@ export default function App(){
 
   if(screen==="customer") return <CustomerKiosk
     pharmacyCatalog={pharmacyCatalog} pharmacySettings={pharmacySettings}
-    onAdminTrigger={()=>setScreen("admin_select")} onCompleteSale={recordSale}/>;
+    onAdminTrigger={()=>setScreen("admin_select")} onCompleteSale={recordSale}
+    boycottedBrands={boycottedBrands}/>;
 
   if(screen==="admin_select") return <AdminSelect
     onSelect={r=>setScreen(r+"_auth")} onBack={()=>setScreen("customer")}/>;
@@ -4377,6 +4591,7 @@ export default function App(){
       pharmacySettings={pharmacySettings} setPharmacySettings={setPharmacySettings}
       catalogReady={catalogReady}
       sales={sales} onResetSales={resetSales}
+      boycottedBrands={boycottedBrands}
       account={loggedInAccount} onUpdateAccount={updateAccountSelf}
       onBack={logoutPharmacy}/>;
   }
@@ -4386,6 +4601,7 @@ export default function App(){
     accounts={accounts} onApprove={approveAccount} onReject={rejectAccount}
     onSuspend={suspendAccount} onReactivate={reactivateAccount} onDeleteAccount={deleteAccount}
     onResetPassword={resetAccountPassword}
+    boycottedBrands={boycottedBrands} onAddBoycottBrand={addBoycottBrand} onRemoveBoycottBrand={removeBoycottBrand}
     superadminAccount={{email:superadminEmail}} onUpdateSuperadmin={updateSuperadminSelf}
     onBack={logoutSuperadmin}/>;
 
