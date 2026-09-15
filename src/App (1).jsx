@@ -2611,6 +2611,23 @@ function Row({label,children}){
 // ══════════════════════════════════════════════════════════════
 // MARKA / KATEGORİ FİLTRE ÇİPLERİ (admin listeleri için)
 // ══════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+// FORM ALANI — modül seviyesinde tanımlanmalı (bileşen fonksiyonu
+// içinde tanımlanırsa her render'da yeni bir "tip" oluşur, React
+// input'u remount eder ve yazarken her harften sonra odak kaybolur)
+// ══════════════════════════════════════════════════════════════
+function PoolFormField({form,setForm,errors,f,l,ph,type="text"}){
+  return(
+    <div style={{marginBottom:8}}>
+      <div style={{fontSize:11,fontWeight:600,color:"#555",marginBottom:3}}>{l}</div>
+      <input value={form[f]} onChange={e=>setForm(prev=>({...prev,[f]:e.target.value}))} placeholder={ph} type={type}
+        style={{width:"100%",padding:"7px 10px",border:`1px solid ${errors[f]?"#C0392B":"#E0E0E0"}`,
+          borderRadius:7,fontSize:12,outline:"none",boxSizing:"border-box"}}/>
+      {errors[f]&&<div style={{color:"#C0392B",fontSize:10,marginTop:2}}>⚠ {errors[f]}</div>}
+    </div>
+  );
+}
+
 function FilterChips({label,options,value,onChange,allLabel="Tümü",getLabel}){
   if(!options||options.length===0)return null;
   const showLabel=opt=>getLabel?getLabel(opt):opt;
@@ -3692,7 +3709,7 @@ function SuperAdmin({pool,setPool,accounts,onApprove,onReject,onSuspend,onReacti
       if(foundBrand&&!poolBrands.includes(foundBrand)&&!COMMON_LOCAL_BRANDS.includes(foundBrand)){
         setNewBrandMode(true);
       }
-      notify("✓ Bulunan bilgiler dolduruldu — lütfen kontrol edip eksikleri (fiyat, içerik vb.) tamamlayın.");
+      notify("✓ İsim/marka/fotoğraf dolduruldu. Fiyat ve açıklama Open Beauty Facts'te olmadığından bunları elle girmeniz gerekiyor (ikisi de zorunlu).");
     }catch(e){
       notify("⚠ Bağlantı hatası — internet bağlantınızı kontrol edin veya elle doldurun.");
     }finally{
@@ -3710,7 +3727,7 @@ function SuperAdmin({pool,setPool,accounts,onApprove,onReject,onSuspend,onReacti
   const toggleFormC=(c)=>setForm(p=>({...p,concerns:p.concerns.includes(c)?p.concerns.filter(x=>x!==c):[...p.concerns,c]}));
   const [errors,setErrors]=useState({});
 
-  const notify=m=>{setMsg(m);setTimeout(()=>setMsg(""),2500);};
+  const notify=m=>{setMsg(m);setTimeout(()=>setMsg(""),4500);};
   const updatePool=async(id,f,v)=>{
     setPool(prev=>prev.map(p=>p.id===id?{...p,[f]:v}:p)); // iyimser güncelleme
     const dbField=POOL_FIELD_MAP[f]||f;
@@ -3729,7 +3746,11 @@ function SuperAdmin({pool,setPool,accounts,onApprove,onReject,onSuspend,onReacti
     if(!form.name.trim())e.name="Ürün adı gerekli";
     if(!form.basePrice||parseInt(form.basePrice)<=0)e.basePrice="Geçerli fiyat giriniz";
     if(!form.desc.trim())e.desc="Açıklama gerekli";
-    setErrors(e);return Object.keys(e).length===0;
+    setErrors(e);
+    if(Object.keys(e).length>0){
+      notify("⚠ Eksik/hatalı alanlar var: "+Object.values(e).join(", "));
+    }
+    return Object.keys(e).length===0;
   };
 
   const addToPool=async()=>{
@@ -3750,16 +3771,6 @@ function SuperAdmin({pool,setPool,accounts,onApprove,onReject,onSuspend,onReacti
       skin_types:[],concerns:[]});
     setErrors({});setShowAdd(false);setNewBrandMode(false);notify("✓ Ürün havuza eklendi.");
   };
-
-  const F=({f,l,ph,type="text"})=>(
-    <div style={{marginBottom:8}}>
-      <div style={{fontSize:11,fontWeight:600,color:"#555",marginBottom:3}}>{l}</div>
-      <input value={form[f]} onChange={e=>setForm(prev=>({...prev,[f]:e.target.value}))} placeholder={ph} type={type}
-        style={{width:"100%",padding:"7px 10px",border:`1px solid ${errors[f]?"#C0392B":"#E0E0E0"}`,
-          borderRadius:7,fontSize:12,outline:"none",boxSizing:"border-box"}}/>
-      {errors[f]&&<div style={{color:"#C0392B",fontSize:10,marginTop:2}}>⚠ {errors[f]}</div>}
-    </div>
-  );
 
   const poolBrands=[...new Set(pool.map(p=>p.brand))].sort((a,b)=>a.localeCompare(b,"tr"));
   const poolSortFn=(a,b)=>{
@@ -3971,8 +3982,8 @@ function SuperAdmin({pool,setPool,accounts,onApprove,onReject,onSuspend,onReacti
               )}
               {errors.brand&&<div style={{color:"#C0392B",fontSize:10,marginTop:2}}>⚠ {errors.brand}</div>}
             </div>
-            <F f="name" l="Ürün Adı *" ph="Temizleyici Jel"/>
-            <F f="photo" l="Fotoğraf URL (opsiyonel)" ph="https://..."/>
+            <PoolFormField form={form} setForm={setForm} errors={errors} f="name" l="Ürün Adı *" ph="Temizleyici Jel"/>
+            <PoolFormField form={form} setForm={setForm} errors={errors} f="photo" l="Fotoğraf URL (opsiyonel)" ph="https://..."/>
             {/* Barkod — tara veya elle gir, ardından açık kaynak veritabanından otomatik doldur */}
             <div style={{marginBottom:8}}>
               <div style={{fontSize:11,fontWeight:600,color:"#555",marginBottom:3}}>Barkod (EAN-13)</div>
@@ -4003,7 +4014,7 @@ function SuperAdmin({pool,setPool,accounts,onApprove,onReject,onSuspend,onReacti
                 ✓ Barkod girildi: {form.barcode}
               </div>}
             </div>
-            <F f="basePrice" l="Taban Fiyat (₺) *" ph="520" type="number"/>
+            <PoolFormField form={form} setForm={setForm} errors={errors} f="basePrice" l="Taban Fiyat (₺) *" ph="520" type="number"/>
             <div style={{marginBottom:8}}>
               <div style={{fontSize:11,fontWeight:600,color:"#555",marginBottom:3}}>Aktif İçerikler (virgülle)</div>
               <IngredientAutocomplete value={form.actives} onChange={v=>setForm(p=>({...p,actives:v}))}
@@ -4014,8 +4025,8 @@ function SuperAdmin({pool,setPool,accounts,onApprove,onReject,onSuspend,onReacti
               pregnancy_safe:result.pregnancy_safe!=="unknown"?result.pregnancy_safe:p.pregnancy_safe,
             }))}/>
             <div style={{height:10}}/>
-            <F f="desc" l="Açıklama *" ph="Kısa ürün açıklaması"/>
-            <F f="how_to" l="Nasıl Kullanılır" ph="Yüze uygulayın…"/>
+            <PoolFormField form={form} setForm={setForm} errors={errors} f="desc" l="Açıklama *" ph="Kısa ürün açıklaması"/>
+            <PoolFormField form={form} setForm={setForm} errors={errors} f="how_to" l="Nasıl Kullanılır" ph="Yüze uygulayın…"/>
             <div style={{display:"flex",gap:8,marginBottom:8}}>
               <div style={{flex:1}}>
                 <div style={{fontSize:11,fontWeight:600,color:"#555",marginBottom:3}}>Kategori</div>
