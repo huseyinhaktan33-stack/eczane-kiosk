@@ -64,6 +64,7 @@ const PREG_META = {
 const CAT_LABELS = {
   temizleyici:"Temizleyici",serum:"Serum",nemlendirici:"Nemlendirici",
   tonik:"Tonik",spf:"Güneş Kremi",tedavi:"Tedavi",goz:"Göz Kremi",maske:"Maske",
+  sac_bakimi:"Saç Bakımı",
 };
 
 const SKIN_TYPE_LABELS = {oily:"Yağlı-Karma",dry:"Kuru",sensitive:"Hassas",normal:"Normal"};
