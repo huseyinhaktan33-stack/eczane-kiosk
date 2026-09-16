@@ -389,10 +389,11 @@ const QUIZ_STEPS = [
   {
     id:"skin_type",question:"Cildiniz genellikle nasıl?",emoji:"🧴",
     options:[
-      {id:"oily",    label:"Yağlı / Karma",    emoji:"💧",desc:"T-bölgesi parlıyor, gözenekler belirgin"},
-      {id:"dry",     label:"Kuru",              emoji:"🌵",desc:"Gerginlik hissediyorum, soyulma olabiliyor"},
-      {id:"sensitive",label:"Hassas / Reaktif", emoji:"🌸",desc:"Kolayca kızarıyor, tahriş oluyor"},
-      {id:"normal",  label:"Normal / Dengeli",  emoji:"✨",desc:"Ne çok yağlı ne çok kuru"},
+      {id:"dry",     label:"Kuru",             emoji:"🌵",desc:"Gerginlik hissediyorum, soyulma olabiliyor"},
+      {id:"oily",    label:"Yağlı",            emoji:"💧",desc:"Cildim geneli parlıyor, gözenekler belirgin"},
+      {id:"combination",label:"Karma",         emoji:"🌗",desc:"T-bölgesi yağlı, yanaklar kuru/normal",mapsTo:"oily"},
+      {id:"sensitive",label:"Hassas / Reaktif",emoji:"🌸",desc:"Kolayca kızarıyor, tahriş oluyor"},
+      {id:"normal",  label:"Normal / Dengeli", emoji:"✨",desc:"Ne çok yağlı ne çok kuru"},
     ]
   },
   {
@@ -814,11 +815,14 @@ function SkinQuiz({onComplete,theme}){
   const current=QUIZ_STEPS[step];
   const progress=(step/QUIZ_STEPS.length)*100;
 
-  const select=(optId)=>{
-    const na={...answers,[current.id]:optId};
+  const [justSelected,setJustSelected]=useState(null);
+  const select=(opt)=>{
+    setJustSelected(opt.id);
+    const effectiveId=opt.mapsTo||opt.id;
+    const na={...answers,[current.id]:effectiveId};
     setAnswers(na);
     if(step<QUIZ_STEPS.length-1){
-      setTimeout(()=>setStep(s=>s+1),200);
+      setTimeout(()=>{setStep(s=>s+1);setJustSelected(null);},200);
     } else {
       setTimeout(()=>onComplete({
         skin_type:na.skin_type,concern:na.concern,
@@ -848,9 +852,9 @@ function SkinQuiz({onComplete,theme}){
         </div>
         <div style={{display:"flex",flexDirection:"column",gap:9}}>
           {current.options.map(opt=>{
-            const sel=answers[current.id]===opt.id;
+            const sel=justSelected===opt.id;
             return(
-              <button key={opt.id} onClick={()=>select(opt.id)}
+              <button key={opt.id} onClick={()=>select(opt)}
                 style={{display:"flex",alignItems:"center",gap:12,padding:"13px 14px",
                   borderRadius:13,textAlign:"left",cursor:"pointer",
                   border:`2px solid ${sel?T.primary:"#EBEBEB"}`,
@@ -3400,6 +3404,162 @@ function PoolItem({product:p, onUpdate, onRemove, selected=false, onToggleSelect
 // Barkod eşleşirse mevcut ürünün sadece fiyatı güncellenir,
 // eşleşmezse minimum bilgiyle yeni ürün olarak havuza eklenir.
 // ══════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════
+// BİLİNEN MARKADAN ÜRÜN ARA & TOPLU İÇE AKTAR (Süper Admin)
+// Open Beauty Facts (açık kaynak) üzerinde marka bazlı arama yapar.
+// Sonuçlar seçilerek onaylanır — hiçbir şey otomatik/kontrolsüz eklenmez.
+// ══════════════════════════════════════════════════════════════
+const QUICK_SEARCH_BRANDS=["Bioderma","Caudalie","Avène","La Roche-Posay","CeraVe"];
+function slugifyBrandForOBF(s){
+  return String(s||"").toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .replace(/[^a-z0-9]+/g,"-").replace(/(^-+|-+$)/g,"");
+}
+
+function BrandSearchImport({pool,onImport}){
+  const [brandInput,setBrandInput]=useState("");
+  const [searching,setSearching]=useState(false);
+  const [results,setResults]=useState([]);
+  const [selected,setSelected]=useState(new Set());
+  const [importing,setImporting]=useState(false);
+  const [msg,setMsg]=useState("");
+  const [searched,setSearched]=useState(false);
+
+  const notify=m=>{setMsg(m);setTimeout(()=>setMsg(""),4500);};
+  const existingBarcodes=new Set(pool.map(p=>p.barcode).filter(Boolean));
+
+  const runSearch=async(brand)=>{
+    const term=(brand||brandInput).trim();
+    if(!term){notify("⚠ Önce bir marka girin veya seçin.");return;}
+    setBrandInput(term);
+    setSearching(true);setResults([]);setSelected(new Set());setSearched(false);
+    try{
+      const tag=slugifyBrandForOBF(term);
+      const res=await fetch(`https://world.openbeautyfacts.org/api/v2/search?brands_tags=${encodeURIComponent(tag)}&fields=code,product_name,product_name_tr,brands,image_front_url,image_url&page_size=40`);
+      const data=await res.json();
+      const products=(data.products||[])
+        .map(p=>({
+          code:p.code,
+          name:p.product_name_tr||p.product_name||"",
+          brand:(p.brands||term).split(",")[0].trim(),
+          photo:p.image_front_url||p.image_url||"",
+        }))
+        .filter(p=>p.code&&p.name); // isimsiz/barkodsuz sonuçlar elenir
+      setResults(products);
+      setSearched(true);
+      if(products.length===0)notify(`❕ "${term}" için sonuç bulunamadı. Marka adını farklı yazmayı deneyin.`);
+    }catch(e){
+      notify("⚠ Bağlantı hatası — internet bağlantınızı kontrol edin.");
+    }finally{
+      setSearching(false);
+    }
+  };
+
+  const toggle=(code)=>setSelected(prev=>{const n=new Set(prev);n.has(code)?n.delete(code):n.add(code);return n;});
+  const toggleAll=()=>{
+    const importable=results.filter(r=>!existingBarcodes.has(r.code));
+    if(selected.size===importable.length)setSelected(new Set());
+    else setSelected(new Set(importable.map(r=>r.code)));
+  };
+
+  const importSelected=async()=>{
+    const picked=results.filter(r=>selected.has(r.code));
+    if(picked.length===0)return;
+    setImporting(true);
+    const rows=picked.map(p=>({
+      barcode:p.code, brand:p.brand||brandInput, name:p.name,
+      category:"nemlendirici", usage:"both", base_price:0,
+      actives:[], pairs_with:[], certs:[], skin_types:[], concerns:[],
+      boycott:"bilinmiyor", pregnancy_safe:"unknown", photo:p.photo||null,
+      description:"Marka aramasıyla içe aktarıldı — fiyat ve detaylar tamamlanmalı.", how_to:"",
+    }));
+    const{data,error}=await supabase.from("pool").insert(rows).select();
+    setImporting(false);
+    if(error){notify("⚠ İçe aktarılamadı: "+error.message);return;}
+    onImport((data||[]).map(poolRowToJs));
+    notify(`✓ ${data?.length||0} ürün havuza eklendi. Fiyat/içerik gibi eksikleri tamamlamayı unutmayın.`);
+    setResults(prev=>prev.filter(r=>!selected.has(r.code)));
+    setSelected(new Set());
+  };
+
+  return(
+    <div>
+      <div style={{fontSize:11,color:"#888",marginBottom:10,lineHeight:1.5}}>
+        Bilinen büyük markalarda açık kaynak veritabanından (Open Beauty Facts) arama yapıp,
+        istediğiniz ürünleri seçerek havuza ekleyebilirsiniz. Hiçbir şey otomatik eklenmez —
+        listeden işaretlediğiniz ürünler eklenir. Sonuçlar internet bağlantılı topluluk
+        veritabanına bağlıdır, her marka için tam kapsam garanti değildir.
+      </div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
+        {QUICK_SEARCH_BRANDS.map(b=>(
+          <button key={b} onClick={()=>runSearch(b)} disabled={searching}
+            style={{background:brandInput===b?"#1C1C1A":"#F0F0F0",color:brandInput===b?"#fff":"#333",
+              border:"none",borderRadius:20,padding:"7px 14px",fontSize:12,fontWeight:600,
+              cursor:searching?"default":"pointer"}}>
+            {b}
+          </button>
+        ))}
+      </div>
+      <div style={{display:"flex",gap:6,marginBottom:12}}>
+        <input value={brandInput} onChange={e=>setBrandInput(e.target.value)}
+          onKeyDown={e=>e.key==="Enter"&&runSearch()}
+          placeholder="Başka bir marka yazın…"
+          style={{flex:1,padding:"9px 12px",border:"1.5px solid #E0E0E0",borderRadius:10,fontSize:13,outline:"none"}}/>
+        <button onClick={()=>runSearch()} disabled={searching}
+          style={{background:searching?"#999":"#1C1C1A",color:"#fff",border:"none",borderRadius:10,
+            padding:"9px 16px",fontSize:13,fontWeight:600,cursor:searching?"default":"pointer",
+            display:"flex",alignItems:"center",gap:6}}>
+          {searching?<><Spinner size={14} light/> Aranıyor…</>:"🔍 Ara"}
+        </button>
+      </div>
+      {msg&&<div style={{background:"#EEF0FB",color:"#3949AB",fontSize:12,padding:"9px 12px",
+        borderRadius:9,marginBottom:12,lineHeight:1.5}}>{msg}</div>}
+      {results.length>0&&(
+        <>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <div style={{fontSize:11,color:"#888"}}>{results.length} sonuç · {selected.size} seçili</div>
+            <button onClick={toggleAll} style={{background:"none",border:"none",color:"#3949AB",
+              fontSize:11,fontWeight:600,cursor:"pointer"}}>Tümünü Seç/Kaldır</button>
+          </div>
+          <div style={{maxHeight:340,overflowY:"auto",display:"flex",flexDirection:"column",gap:6,marginBottom:12}}>
+            {results.map(r=>{
+              const exists=existingBarcodes.has(r.code);
+              return(
+                <label key={r.code} style={{display:"flex",gap:8,alignItems:"center",
+                  background:exists?"#F4F4F4":"#fff",border:"1px solid #E0E0E0",borderRadius:10,
+                  padding:8,cursor:exists?"default":"pointer",opacity:exists?.6:1}}>
+                  <input type="checkbox" checked={selected.has(r.code)} disabled={exists}
+                    onChange={()=>toggle(r.code)} style={{width:16,height:16,flexShrink:0,accentColor:"#1C1C1A"}}/>
+                  {r.photo?<img src={r.photo} style={{width:34,height:34,borderRadius:7,objectFit:"cover",flexShrink:0}}
+                    onError={e=>e.target.style.display="none"}/>:<Avatar brand={r.brand} size={34}/>}
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:11,color:"#999"}}>{r.brand}</div>
+                    <div style={{fontSize:12,fontWeight:600,color:"#1C1C1A",
+                      overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.name}</div>
+                  </div>
+                  {exists&&<span style={{fontSize:9,color:"#999",flexShrink:0}}>zaten var</span>}
+                </label>
+              );
+            })}
+          </div>
+          <button onClick={importSelected} disabled={selected.size===0||importing}
+            style={{width:"100%",background:selected.size===0||importing?"#CCC":"#2C4A3E",color:"#fff",
+              border:"none",borderRadius:10,padding:"11px",fontSize:13,fontWeight:700,
+              cursor:selected.size===0||importing?"default":"pointer",
+              display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
+            {importing?<><Spinner size={14} light/> Ekleniyor…</>:`Seçilenleri Havuza Ekle (${selected.size})`}
+          </button>
+        </>
+      )}
+      {searched&&results.length===0&&!searching&&(
+        <div style={{textAlign:"center",padding:30,color:"#999",fontSize:12}}>
+          Bu markada sonuç bulunamadı. Ürünleri "Yeni Ürün Ekle" ile tek tek veya barkoddan ekleyebilirsiniz.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PoolExcelImport({pool,onImport}){
   const [rows,setRows]=useState([]);
   const [headers,setHeaders]=useState([]);
@@ -3697,7 +3857,11 @@ function SuperAdmin({pool,setPool,accounts,onApprove,onReject,onSuspend,onReacti
         return;
       }
       const pr=data.product;
-      const foundBrand=(pr.brands||"").split(",")[0].trim();
+      const brandCandidates=(pr.brands||"").split(",").map(s=>s.trim()).filter(Boolean);
+      // Açık kaynak veritabanı topluluk tarafından düzenleniyor, marka alanı bazen
+      // birden fazla/belirsiz değer içerebiliyor (örn. "Sun, Nuxe"). Tek bir adayı
+      // körlemesine seçmek yerine, birden fazla varsa admin'e bırakılır.
+      const foundBrand=brandCandidates.length===1?brandCandidates[0]:"";
       const foundName=pr.product_name||pr.product_name_tr||pr.generic_name||"";
       const foundPhoto=pr.image_front_url||pr.image_url||"";
       setForm(p=>({
@@ -3706,10 +3870,14 @@ function SuperAdmin({pool,setPool,accounts,onApprove,onReject,onSuspend,onReacti
         brand: foundBrand||p.brand,
         photo: foundPhoto||p.photo,
       }));
-      if(foundBrand&&!poolBrands.includes(foundBrand)&&!COMMON_LOCAL_BRANDS.includes(foundBrand)){
+      if(!foundBrand||(!poolBrands.includes(foundBrand)&&!COMMON_LOCAL_BRANDS.includes(foundBrand))){
         setNewBrandMode(true);
       }
-      notify("✓ İsim/marka/fotoğraf dolduruldu. Fiyat ve açıklama Open Beauty Facts'te olmadığından bunları elle girmeniz gerekiyor (ikisi de zorunlu).");
+      if(brandCandidates.length>1){
+        notify(`✓ İsim/fotoğraf dolduruldu. Marka için birden fazla aday bulundu (${brandCandidates.join(" / ")}) — hangisi doğruysa siz yazın. Fiyat ve açıklama da zorunlu, elle girin.`);
+      } else {
+        notify("✓ İsim/marka/fotoğraf dolduruldu. Fiyat ve açıklama Open Beauty Facts'te olmadığından bunları elle girmeniz gerekiyor (ikisi de zorunlu).");
+      }
     }catch(e){
       notify("⚠ Bağlantı hatası — internet bağlantınızı kontrol edin veya elle doldurun.");
     }finally{
@@ -3840,7 +4008,7 @@ function SuperAdmin({pool,setPool,accounts,onApprove,onReject,onSuspend,onReacti
           </div>
         </div>
         <div style={{display:"flex",gap:4}}>
-          {[{id:"pool",l:"Master Havuz"},{id:"excel",l:"Excel İçe Aktar"},{id:"accounts",l:`Hesap Talepleri${pendingCount>0?` (${pendingCount})`:""}`}].map(t=>(
+          {[{id:"pool",l:"Master Havuz"},{id:"excel",l:"Excel İçe Aktar"},{id:"brandsearch",l:"Marka Ara"},{id:"accounts",l:`Hesap Talepleri${pendingCount>0?` (${pendingCount})`:""}`}].map(t=>(
             <button key={t.id} onClick={()=>setPanelTab(t.id)}
               style={{flex:1,background:panelTab===t.id?"rgba(255,255,255,.15)":"transparent",border:"none",
                 color:panelTab===t.id?"#fff":"rgba(255,255,255,.5)",borderRadius:"8px 8px 0 0",
@@ -3861,6 +4029,9 @@ function SuperAdmin({pool,setPool,accounts,onApprove,onReject,onSuspend,onReacti
         )}
         {panelTab==="excel"&&(
           <PoolExcelImport pool={pool} onImport={newPool=>{setPool(newPool);notify("✓ Havuz Excel'den güncellendi.");}}/>
+        )}
+        {panelTab==="brandsearch"&&(
+          <BrandSearchImport pool={pool} onImport={newItems=>setPool(prev=>[...prev,...newItems])}/>
         )}
         {panelTab==="pool"&&(<>
         <div style={{display:"flex",gap:8,marginBottom:10}}>
@@ -4441,17 +4612,21 @@ export default function App(){
     if(!error&&data)setAccounts(data.map(rowToAccount));
   };
 
-  // Sayfa açıldığında/yenilendiğinde mevcut Supabase oturumunu geri yükle
+  // Sayfa açıldığında/yenilendiğinde mevcut Supabase oturumunu geri yükle —
+  // AMA sadece açılan link o rolü istiyorsa (?pharmacy, ?superadmin). Aksi hâlde
+  // aktif oturum başka bir role zorla yönlendirme yapmaz; istenen rolün giriş
+  // ekranı normal şekilde gösterilir (bir linki açabilmek için önce çıkış
+  // yapmak zorunda kalınmaz).
   useEffect(()=>{
     supabase.auth.getSession().then(async({data})=>{
       const user=data?.session?.user;
       if(user){
         const{data:prof}=await supabase.from("profiles").select("*").eq("id",user.id).single();
         if(prof){
-          if(prof.role==="pharmacy"&&prof.status==="approved"){
+          if(prof.role==="pharmacy"&&prof.status==="approved"&&urlMode==="pharmacy"){
             setLoggedInAccount(rowToAccount(prof));
             setScreen("pharmacy");
-          } else if(prof.role==="superadmin"&&prof.status==="approved"){
+          } else if(prof.role==="superadmin"&&prof.status==="approved"&&urlMode==="superadmin"){
             await loadAccounts();
             setSuperadminEmail(prof.email||user.email||"");
             setScreen("superadmin");
